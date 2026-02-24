@@ -1,0 +1,93 @@
+version: '3.8'
+
+services:
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_DATABASE: teamsync
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+
+  web:
+    build: .
+    environment:
+      DEBUG: "True"
+      SECRET_KEY: "your-secret-key-change-in-production"
+      DB_HOST: db
+      DB_NAME: teamsync
+      DB_USER: root
+      DB_PASSWORD: 123456
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - redis
+      - minio
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py runserver 0.0.0.0:8000"
+
+  celery:
+    build: .
+    environment:
+      DEBUG: "True"
+      SECRET_KEY: "your-secret-key-change-in-production"
+      DB_HOST: db
+      DB_NAME: teamsync
+      DB_USER: root
+      DB_PASSWORD: 123456
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      - db
+      - redis
+    command: celery -A config worker -l info
+
+  celery-beat:
+    build: .
+    environment:
+      DEBUG: "True"
+      SECRET_KEY: "your-secret-key-change-in-production"
+      DB_HOST: db
+      DB_NAME: teamsync
+      DB_USER: root
+      DB_PASSWORD: 123456
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      - db
+      - redis
+    command: celery -A config beat -l info
+
+volumes:
+  mysql_data:
+  minio_data:
