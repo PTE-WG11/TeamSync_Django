@@ -15,6 +15,9 @@ urlpatterns = [
     path('gantt/', GlobalGanttView.as_view(), name='global-gantt'),
     path('calendar/', GlobalCalendarView.as_view(), name='global-calendar'),
     
+    # Kanban unassigned task creation (any team member can create)
+    path('create-unassigned/', views.TaskCreateUnassignedView.as_view(), name='task-create-unassigned'),
+    
     # Project tasks
     path('project/<int:project_id>/', views.ProjectTaskListView.as_view(), name='project-tasks'),
     path('project/<int:project_id>/create/', views.TaskCreateView.as_view(), name='task-create'),
@@ -26,6 +29,13 @@ urlpatterns = [
     path('<int:pk>/status/', views.TaskStatusUpdateView.as_view(), name='task-status-update'),
     path('<int:pk>/delete/', views.TaskDeleteView.as_view(), name='task-delete'),
     path('<int:pk>/history/', views.TaskHistoryView.as_view(), name='task-history'),
+    
+    # Task delete logs (admin only)
+    path('delete-logs/', views.TaskDeleteLogListView.as_view(), name='task-delete-logs'),
+    path('delete-logs/<int:pk>/', views.TaskDeleteLogDetailView.as_view(), name='task-delete-log-detail'),
+    
+    # Task claim (for kanban drag and drop)
+    path('<int:pk>/claim/', views.TaskClaimView.as_view(), name='task-claim'),
     
     # Subtasks
     path('<int:pk>/subtasks/', views.SubtaskCreateView.as_view(), name='subtask-create'),

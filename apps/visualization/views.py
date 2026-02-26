@@ -3,7 +3,7 @@ Visualization views for TeamSync.
 """
 from rest_framework import generics, permissions
 from rest_framework.response import Response
-from django.db.models import Q, Count
+from django.db.models import Q, Count, Case, When, Value, IntegerField
 from django.utils import timezone
 from datetime import timedelta
 
@@ -295,18 +295,29 @@ class GlobalKanbanView(generics.GenericAPIView):
     permission_classes = [IsTeamMember]
     
     def get(self, request, *args, **kwargs):
-        """Get global kanban data."""
+        """Get global kanban data.
+        
+        Query Params:
+            current_user_id: Current user ID for sorting (own tasks first)
+        """
         user = request.user
         is_admin = user.is_super_admin or user.is_team_admin
+        
+        # Get current_user_id from query params for sorting
+        current_user_id = request.query_params.get('current_user_id')
+        if current_user_id:
+            try:
+                current_user_id = int(current_user_id)
+            except ValueError:
+                current_user_id = user.id
+        else:
+            current_user_id = user.id
         
         # Filter by project
         project_id = request.query_params.get('project_id')
         
-        # Build queryset
-        if is_admin:
-            queryset = Task.objects.filter(level=1)
-        else:
-            queryset = Task.objects.filter(level=1, assignee=user)
+        # Build queryset - show all tasks for team members, not just their own
+        queryset = Task.objects.filter(level=1)
         
         if project_id:
             queryset = queryset.filter(project_id=project_id)
@@ -315,7 +326,33 @@ class GlobalKanbanView(generics.GenericAPIView):
             queryset = queryset.filter(
                 Q(project__team=user.team) |
                 Q(project__members=user)
-            )
+            ).distinct()  # 去重，避免同一任务被重复匹配
+        
+        # Priority mapping for sorting (higher number = higher priority)
+        priority_order = Case(
+            When(priority='urgent', then=Value(4)),
+            When(priority='high', then=Value(3)),
+            When(priority='medium', then=Value(2)),
+            When(priority='low', then=Value(1)),
+            default=Value(0),
+            output_field=IntegerField()
+        )
+        
+        # Check if task belongs to current user
+        is_my_task = Case(
+            When(assignee_id=current_user_id, then=Value(1)),
+            default=Value(0),
+            output_field=IntegerField()
+        )
+        
+        # Apply sorting:
+        # 1. First: is_my_task desc (own tasks first)
+        # 2. Second: priority desc (urgent > high > medium > low)
+        # 3. Third: created_at desc (newest first)
+        queryset = queryset.annotate(
+            is_my_task=is_my_task,
+            priority_value=priority_order
+        ).order_by('-is_my_task', '-priority_value', '-created_at')
         
         # Group by status
         columns = [
@@ -327,21 +364,27 @@ class GlobalKanbanView(generics.GenericAPIView):
         
         column_map = {col['id']: col for col in columns}
         
-        for task in queryset.select_related('assignee', 'project'):
+        for task in queryset.select_related('assignee', 'project', 'created_by'):
             task_data = {
                 'id': task.id,
                 'title': task.title,
+                'description': task.description,
                 'priority': task.priority,
                 'assignee': {
                     'id': task.assignee.id if task.assignee else None,
                     'username': task.assignee.username if task.assignee else None
                 } if task.assignee else None,
+                'created_by': {
+                    'id': task.created_by.id if task.created_by else None,
+                    'username': task.created_by.username if task.created_by else None
+                } if task.created_by else None,
                 'project': {
                     'id': task.project.id,
                     'title': task.project.title
                 },
                 'end_date': task.end_date.isoformat() if task.end_date else None,
-                'normal_flag': task.normal_flag
+                'normal_flag': task.normal_flag,
+                'created_at': task.created_at.isoformat() if task.created_at else None
             }
             
             if task.status in column_map:
@@ -383,7 +426,7 @@ class GlobalGanttView(generics.GenericAPIView):
             queryset = queryset.filter(
                 Q(project__team=user.team) |
                 Q(project__members=user)
-            )
+            ).distinct()  # 去重，避免同一任务被重复匹配
         
         # Apply date filter
         if start_date:
@@ -484,7 +527,7 @@ class GlobalCalendarView(generics.GenericAPIView):
             queryset = queryset.filter(
                 Q(project__team=user.team) |
                 Q(project__members=user)
-            )
+            ).distinct()  # 去重，避免同一任务被重复匹配
         
         # Filter by month
         from calendar import monthrange
@@ -553,11 +596,11 @@ class GlobalCalendarView(generics.GenericAPIView):
 
 
 class GlobalTaskListView(generics.GenericAPIView):
-    """Get global task list across projects."""
+    """Get global task list across projects with tree structure."""
     permission_classes = [IsTeamMember]
     
     def get(self, request, *args, **kwargs):
-        """Get global task list."""
+        """Get global task list with tree structure."""
         user = request.user
         is_admin = user.is_super_admin or user.is_team_admin
         
@@ -569,12 +612,19 @@ class GlobalTaskListView(generics.GenericAPIView):
         search = request.query_params.get('search')
         sort_by = request.query_params.get('sort_by', 'created_at')
         sort_order = request.query_params.get('sort_order', 'desc')
+        view_type = request.query_params.get('view', 'tree')  # tree or flat
         
-        # Build queryset
+        # Build queryset - 只查询主任务(level=1)，子任务通过递归获取
         if is_admin:
             queryset = Task.objects.filter(level=1)
         else:
-            queryset = Task.objects.filter(level=1, assignee=user)
+            # 成员需要看到：
+            # 1. 分配给自己的主任务
+            # 2. 包含自己子任务的主任务（即使主任务不是自己的）
+            queryset = Task.objects.filter(
+                Q(level=1, assignee=user) |
+                Q(level=1, children__assignee=user)
+            ).distinct()
         
         if project_id:
             queryset = queryset.filter(project_id=project_id)
@@ -582,7 +632,7 @@ class GlobalTaskListView(generics.GenericAPIView):
             queryset = queryset.filter(
                 Q(project__team=user.team) |
                 Q(project__members=user)
-            )
+            ).distinct()
         
         # Apply filters
         if status:
@@ -607,62 +657,176 @@ class GlobalTaskListView(generics.GenericAPIView):
         order_prefix = '-' if sort_order == 'desc' else ''
         queryset = queryset.order_by(f"{order_prefix}{sort_by}")
         
-        # Paginate
-        from config.pagination import StandardPagination
-        paginator = StandardPagination()
-        page = paginator.paginate_queryset(queryset.select_related('assignee', 'project'), request)
-        
-        if page is not None:
-            data = []
-            for task in page:
-                data.append({
-                    'id': task.id,
-                    'title': task.title,
-                    'status': task.status,
-                    'priority': task.priority,
-                    'level': task.level,
-                    'assignee': {
-                        'id': task.assignee.id if task.assignee else None,
-                        'username': task.assignee.username if task.assignee else None
-                    } if task.assignee else None,
-                    'project': {
-                        'id': task.project.id,
-                        'title': task.project.title
-                    },
-                    'start_date': task.start_date.isoformat() if task.start_date else None,
-                    'end_date': task.end_date.isoformat() if task.end_date else None,
-                    'normal_flag': task.normal_flag,
-                    'created_at': task.created_at.isoformat()
-                })
-            return paginator.get_paginated_response(data)
-        
-        # No pagination
-        data = []
-        for task in queryset.select_related('assignee', 'project'):
-            data.append({
-                'id': task.id,
-                'title': task.title,
-                'status': task.status,
-                'priority': task.priority,
-                'level': task.level,
-                'assignee': {
-                    'id': task.assignee.id if task.assignee else None,
-                    'username': task.assignee.username if task.assignee else None
-                } if task.assignee else None,
-                'project': {
-                    'id': task.project.id,
-                    'title': task.project.title
-                },
-                'start_date': task.start_date.isoformat() if task.start_date else None,
-                'end_date': task.end_date.isoformat() if task.end_date else None,
-                'normal_flag': task.normal_flag,
-                'created_at': task.created_at.isoformat()
+        # Build tree data
+        if view_type == 'flat':
+            # Flat view - 返回扁平列表，不包含子任务嵌套
+            data = self._build_flat_data(queryset, user, is_admin)
+            return Response({
+                'code': 200,
+                'message': 'success',
+                'data': {
+                    'items': data,
+                    'view_type': 'flat'
+                }
             })
+        
+        # Tree view - 返回树形结构，包含嵌套子任务（默认）
+        data = self._build_tree_data(queryset, user, is_admin)
         
         return Response({
             'code': 200,
             'message': 'success',
             'data': {
-                'items': data
+                'items': data,
+                'view_type': 'tree'
             }
         })
+    
+    def _build_tree_data(self, queryset, user, is_admin):
+        """Build tree structure with nested children."""
+        data = []
+        for task in queryset.select_related('assignee', 'project', 'created_by'):
+            task_data = self._get_task_detail(task, user, is_admin, include_children=True)
+            data.append(task_data)
+        return data
+    
+    def _build_flat_data(self, queryset, user, is_admin):
+        """Build flat list without nested children."""
+        data = []
+        for task in queryset.select_related('assignee', 'project', 'created_by'):
+            task_data = self._get_task_detail(task, user, is_admin, include_children=False)
+            data.append(task_data)
+        return data
+    
+    def _get_task_detail(self, task, user, is_admin, include_children=True):
+        """Get detailed task info with permission check."""
+        # Check if user can view full details
+        can_view_full = (
+            is_admin or
+            task.assignee_id == user.id or
+            task.children.filter(assignee=user).exists()  # 有子任务分配给用户
+        )
+        
+        # Base fields (always visible)
+        task_data = {
+            'id': task.id,
+            'title': task.title,
+            'project': {
+                'id': task.project.id,
+                'title': task.project.title,
+                'is_archived': task.project.is_archived
+            },
+            'status': task.status,
+            'status_display': task.get_status_display(),
+            'priority': task.priority,
+            'priority_display': task.get_priority_display(),
+            'level': task.level,
+            'path': task.path,
+            'can_view': can_view_full,
+        }
+        
+        if not can_view_full:
+            # 无权限时返回脱敏数据
+            task_data.update({
+                'assignee': {'id': None, 'username': '🔒 私有任务'},
+                'description': '',
+                'start_date': None,
+                'end_date': None,
+                'normal_flag': 'normal',
+                'subtask_count': 0,
+                'completed_subtask_count': 0,
+                'children': [],
+                'message': '该任务未分配给您，无权查看详情'
+            })
+            return task_data
+        
+        # Full details (authorized user)
+        task_data.update({
+            'description': task.description,
+            'assignee': {
+                'id': task.assignee.id if task.assignee else None,
+                'username': task.assignee.username if task.assignee else None,
+                'avatar': task.assignee.avatar if task.assignee else None
+            } if task.assignee else None,
+            'assignee_id': task.assignee_id,
+            'parent_id': task.parent_id,
+            'start_date': task.start_date.isoformat() if task.start_date else None,
+            'end_date': task.end_date.isoformat() if task.end_date else None,
+            'normal_flag': task.normal_flag,
+            'is_overdue': task.is_overdue,
+            'subtask_count': task.subtask_count,
+            'completed_subtask_count': task.completed_subtask_count,
+            'can_have_subtasks': task.can_have_subtasks,
+            'created_by': {
+                'id': task.created_by.id if task.created_by else None,
+                'username': task.created_by.username if task.created_by else None
+            } if task.created_by else None,
+            'created_at': task.created_at.isoformat() if task.created_at else None,
+            'updated_at': task.updated_at.isoformat() if task.updated_at else None,
+        })
+        
+        # Add nested children if needed
+        if include_children and task.can_have_subtasks:
+            children = self._get_children(task, user, is_admin)
+            task_data['children'] = children
+        else:
+            task_data['children'] = []
+        
+        return task_data
+    
+    def _get_children(self, parent_task, user, is_admin):
+        """Recursively get child tasks with permission filtering."""
+        children = []
+        
+        # Get child tasks
+        child_queryset = parent_task.children.all()
+        
+        # For non-admin members, only show their own subtasks
+        if not is_admin:
+            child_queryset = child_queryset.filter(assignee=user)
+        
+        for child in child_queryset.select_related('assignee', 'created_by'):
+            child_data = {
+                'id': child.id,
+                'title': child.title,
+                'description': child.description,
+                'project_id': child.project_id,
+                'status': child.status,
+                'status_display': child.get_status_display(),
+                'priority': child.priority,
+                'priority_display': child.get_priority_display(),
+                'level': child.level,
+                'parent_id': child.parent_id,
+                'path': child.path,
+                'assignee': {
+                    'id': child.assignee.id if child.assignee else None,
+                    'username': child.assignee.username if child.assignee else None,
+                    'avatar': child.assignee.avatar if child.assignee else None
+                } if child.assignee else None,
+                'assignee_id': child.assignee_id,
+                'start_date': child.start_date.isoformat() if child.start_date else None,
+                'end_date': child.end_date.isoformat() if child.end_date else None,
+                'normal_flag': child.normal_flag,
+                'is_overdue': child.is_overdue,
+                'subtask_count': child.subtask_count,
+                'completed_subtask_count': child.completed_subtask_count,
+                'can_have_subtasks': child.can_have_subtasks,
+                'can_view': True,
+                'created_by': {
+                    'id': child.created_by.id if child.created_by else None,
+                    'username': child.created_by.username if child.created_by else None
+                } if child.created_by else None,
+                'created_at': child.created_at.isoformat() if child.created_at else None,
+                'updated_at': child.updated_at.isoformat() if child.updated_at else None,
+            }
+            
+            # Recursively get grandchildren
+            if child.can_have_subtasks:
+                grandchildren = self._get_children(child, user, is_admin)
+                child_data['children'] = grandchildren
+            else:
+                child_data['children'] = []
+            
+            children.append(child_data)
+        
+        return children

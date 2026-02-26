@@ -195,6 +195,7 @@ POST /api/projects/create/
 | 方法 | 端点 | 说明 | 权限 |
 |------|------|------|------|
 | GET | `/tasks/kanban/` | 全局看板数据 | 团队成员 |
+| POST | `/tasks/create-unassigned/` | 创建无负责人任务 | 团队成员 |
 | GET | `/tasks/list/` | 全局任务列表 | 团队成员 |
 | GET | `/tasks/gantt/` | 全局甘特图数据 | 团队成员 |
 | GET | `/tasks/calendar/` | 全局日历数据 | 团队成员 |
@@ -208,8 +209,11 @@ POST /api/projects/create/
 | GET | `/tasks/{id}/` | 任务详情 | 团队成员 |
 | PATCH | `/tasks/{id}/update/` | 更新任务 | 负责人/管理员 |
 | PATCH | `/tasks/{id}/status/` | 更新状态 | 负责人/管理员 |
+| POST | `/tasks/{id}/claim/` | 领取并激活任务 | 团队成员 |
 | DELETE | `/tasks/{id}/delete/` | 删除任务 | 超管 |
 | GET | `/tasks/{id}/history/` | 变更历史 | 团队成员 |
+| GET | `/tasks/delete-logs/` | 删除日志列表 | 管理员 |
+| GET | `/tasks/delete-logs/{id}/` | 删除日志详情 | 管理员 |
 | POST | `/tasks/{id}/subtasks/` | 创建子任务 | 负责人 |
 | GET | `/tasks/project/{project_id}/progress/` | 任务统计 | 管理员 |
 
@@ -220,14 +224,21 @@ POST /api/projects/create/
 **GET** `/tasks/kanban/`
 
 > 权限：所有团队成员
-> 数据范围：管理员返回所有任务，成员返回自己的任务
+> 数据范围：返回所有项目中的主任务（level=1），所有人可见
+> 排序规则：当前用户任务排前面 > 优先级高 > 最新创建
 
 **查询参数**
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | project_id | integer | 否 | 项目过滤，不传则显示所有项目 |
-| assignee | string | 否 | me(我的), all(全部)，默认 all |
+| current_user_id | integer | 否 | 当前用户ID，用于将自己任务排前面 |
+
+**排序规则（后端处理）**
+
+1. **第一优先级**：`is_my_task` (assignee_id == current_user_id) 降序
+2. **第二优先级**：`priority` 降序 (urgent=4 > high=3 > medium=2 > low=1)
+3. **第三优先级**：`created_at` 降序（最新的在前）
 
 **响应示例**
 ```json
@@ -242,20 +253,70 @@ POST /api/projects/create/
         "color": "#94A3B8",
         "tasks": [
           {
-            "id": 5,
-            "title": "技术选型",
-            "priority": "high",
-            "assignee": {"id": 1, "username": "zhangsan"},
+            "id": 101,
+            "title": "紧急任务A",
+            "description": "这是一个紧急任务的详细描述",
+            "priority": "urgent",
+            "assignee": {"id": 5, "username": "张三"},
+            "assignee_id": 5,
+            "created_by": {"id": 1, "username": "管理员"},
             "project": {"id": 1, "title": "电商平台重构"},
-            "end_date": "2026-02-20",
-            "normal_flag": "normal"
+            "end_date": "2026-02-25T18:00:00+08:00",
+            "normal_flag": "normal",
+            "created_at": "2026-02-01T08:00:00+08:00"
+          },
+          {
+            "id": 102,
+            "title": "无负责人任务",
+            "description": "等待分配的任务",
+            "priority": "high",
+            "assignee": null,
+            "assignee_id": null,
+            "created_by": {"id": 2, "username": "李四"},
+            "project": {"id": 1, "title": "电商平台重构"},
+            "end_date": null,
+            "normal_flag": "normal",
+            "created_at": "2026-02-01T07:00:00+08:00"
           }
         ]
+      },
+      {
+        "id": "pending",
+        "title": "待处理",
+        "color": "#F59E0B",
+        "tasks": []
+      },
+      {
+        "id": "in_progress",
+        "title": "进行中",
+        "color": "#0D9488",
+        "tasks": []
+      },
+      {
+        "id": "completed",
+        "title": "已完成",
+        "color": "#10B981",
+        "tasks": []
       }
     ]
   }
 }
 ```
+
+**任务字段说明**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | integer | 任务ID |
+| title | string | 任务标题 |
+| description | string | 任务描述 |
+| priority | string | 优先级：urgent/high/medium/low |
+| assignee | object/null | 负责人信息（id, username） |
+| created_by | object/null | 创建者信息（id, username） |
+| project | object | 项目信息（id, title） |
+| end_date | string/null | 截止时间（ISO 8601格式） |
+| normal_flag | string | 状态标识：normal/overdue |
+| created_at | string | 创建时间（ISO 8601格式） |
 
 ---
 
@@ -264,7 +325,8 @@ POST /api/projects/create/
 **GET** `/tasks/list/`
 
 > 权限：所有团队成员
-> 数据范围：管理员返回所有任务，成员返回自己的任务
+> 数据范围：管理员返回所有主任务及子任务，成员返回自己的主任务及子任务
+> 返回格式：默认树形结构（支持层级嵌套），可通过 `view=flat` 切换为扁平列表
 
 **查询参数**
 
@@ -277,39 +339,211 @@ POST /api/projects/create/
 | search | string | 否 | 标题搜索 |
 | sort_by | string | 否 | 排序字段: created_at, end_date, priority |
 | sort_order | string | 否 | 排序方向: asc, desc |
-| page | integer | 否 | 页码，默认 1 |
-| page_size | integer | 否 | 每页数量，默认 20 |
+| view | string | 否 | 视图类型: `tree`(默认), `flat` |
 
-**响应示例**
+**响应结构**
+
+**Tree 视图（默认）**
 ```json
 {
   "code": 200,
   "message": "success",
   "data": {
+    "view_type": "tree",
     "items": [
       {
         "id": 1,
         "title": "API设计",
+        "description": "设计RESTful API接口",
+        "project": {
+          "id": 1,
+          "title": "电商平台重构",
+          "is_archived": false
+        },
         "status": "in_progress",
+        "status_display": "进行中",
         "priority": "high",
+        "priority_display": "高",
         "level": 1,
-        "assignee": {"id": 1, "username": "zhangsan"},
-        "project": {"id": 1, "title": "电商平台重构"},
+        "path": "",
+        "assignee": {
+          "id": 1,
+          "username": "zhangsan",
+          "avatar": "https://example.com/avatar.jpg"
+        },
+        "assignee_id": 1,
+        "parent_id": null,
         "start_date": "2026-02-01",
         "end_date": "2026-02-10",
         "normal_flag": "normal",
-        "created_at": "2026-02-01T08:00:00Z"
+        "is_overdue": false,
+        "subtask_count": 2,
+        "completed_subtask_count": 1,
+        "can_have_subtasks": true,
+        "can_view": true,
+        "created_by": {
+          "id": 1,
+          "username": "admin"
+        },
+        "created_at": "2026-02-01T08:00:00Z",
+        "updated_at": "2026-02-01T10:30:00Z",
+        "children": [
+          {
+            "id": 2,
+            "title": "用户接口设计",
+            "description": "设计用户相关接口",
+            "project_id": 1,
+            "status": "completed",
+            "status_display": "已完成",
+            "priority": "medium",
+            "priority_display": "中",
+            "level": 2,
+            "parent_id": 1,
+            "path": "/1",
+            "assignee": {
+              "id": 2,
+              "username": "lisi",
+              "avatar": null
+            },
+            "assignee_id": 2,
+            "start_date": "2026-02-01",
+            "end_date": "2026-02-05",
+            "normal_flag": "normal",
+            "is_overdue": false,
+            "subtask_count": 1,
+            "completed_subtask_count": 0,
+            "can_have_subtasks": true,
+            "can_view": true,
+            "created_by": {
+              "id": 1,
+              "username": "admin"
+            },
+            "created_at": "2026-02-01T08:00:00Z",
+            "updated_at": "2026-02-05T16:00:00Z",
+            "children": [
+              // 孙任务 (level=3)
+            ]
+          }
+        ]
       }
-    ],
-    "pagination": {
-      "page": 1,
-      "page_size": 20,
-      "total": 50,
-      "total_pages": 3
-    }
+    ]
   }
 }
 ```
+
+**Flat 视图（`?view=flat`）**
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "view_type": "flat",
+    "items": [
+      {
+        "id": 1,
+        "title": "API设计",
+        "description": "设计RESTful API接口",
+        "project": {
+          "id": 1,
+          "title": "电商平台重构",
+          "is_archived": false
+        },
+        "status": "in_progress",
+        "status_display": "进行中",
+        "priority": "high",
+        "priority_display": "高",
+        "level": 1,
+        "path": "",
+        "assignee": {
+          "id": 1,
+          "username": "zhangsan",
+          "avatar": "https://example.com/avatar.jpg"
+        },
+        "assignee_id": 1,
+        "parent_id": null,
+        "start_date": "2026-02-01",
+        "end_date": "2026-02-10",
+        "normal_flag": "normal",
+        "is_overdue": false,
+        "subtask_count": 2,
+        "completed_subtask_count": 1,
+        "can_have_subtasks": true,
+        "can_view": true,
+        "created_by": {
+          "id": 1,
+          "username": "admin"
+        },
+        "created_at": "2026-02-01T08:00:00Z",
+        "updated_at": "2026-02-01T10:30:00Z",
+        "children": []  // flat 视图中为空数组
+      }
+    ]
+  }
+}
+```
+
+**无权限任务（成员看到未分配给自己的主任务）**
+```json
+{
+  "id": 5,
+  "title": "私有任务",
+  "project": {
+    "id": 1,
+    "title": "电商平台重构",
+    "is_archived": false
+  },
+  "status": "in_progress",
+  "status_display": "进行中",
+  "priority": "high",
+  "priority_display": "高",
+  "level": 1,
+  "path": "",
+  "can_view": false,
+  "assignee": {
+    "id": null,
+    "username": "🔒 私有任务"
+  },
+  "description": "",
+  "start_date": null,
+  "end_date": null,
+  "normal_flag": "normal",
+  "subtask_count": 0,
+  "completed_subtask_count": 0,
+  "children": [],
+  "message": "该任务未分配给您，无权查看详情"
+}
+```
+
+**字段说明**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | integer | 任务ID |
+| title | string | 任务标题 |
+| description | string | 任务描述（无权限时为空） |
+| project | object | 项目信息（id, title, is_archived） |
+| status | string | 状态编码 |
+| status_display | string | 状态显示文本 |
+| priority | string | 优先级编码 |
+| priority_display | string | 优先级显示文本 |
+| level | integer | 层级（1=主任务, 2=子任务, 3=孙任务） |
+| path | string | 路径枚举，如 `/1/12` |
+| assignee | object | 负责人信息（id, username, avatar） |
+| assignee_id | integer | 负责人ID |
+| parent_id | integer/null | 父任务ID |
+| start_date | string/datetime | 开始时间（ISO 8601格式：`YYYY-MM-DDTHH:mm:ss`） |
+| end_date | string/datetime | 截止时间（ISO 8601格式：`YYYY-MM-DDTHH:mm:ss`） |
+| normal_flag | string | 正常标识：normal/overdue |
+| is_overdue | boolean | 是否逾期 |
+| subtask_count | integer | 子任务数量 |
+| completed_subtask_count | integer | 已完成子任务数量 |
+| can_have_subtasks | boolean | 是否可创建子任务（level < 3） |
+| can_view | boolean | 当前用户是否有查看权限 |
+| created_by | object | 创建者信息（id, username） |
+| created_at | string | 创建时间（ISO 8601格式） |
+| updated_at | string | 更新时间（ISO 8601格式） |
+| children | array | 子任务列表（tree视图递归嵌套） |
+| message | string | 无权限时的提示信息 |
 
 ---
 
@@ -419,8 +653,12 @@ POST /api/projects/create/
 | description | string | 否 | 任务描述 |
 | assignee_id | integer | 是 | 负责人ID |
 | priority | string | 否 | 优先级：`urgent`/`high`/`medium`/`low`，默认 `medium` |
-| start_date | string | 否 | 开始日期，格式 `YYYY-MM-DD` |
-| end_date | string | 否 | 结束日期，格式 `YYYY-MM-DD` |
+| start_date | string | 否 | 开始时间，格式 `YYYY-MM-DDTHH:mm:ss` 或 `YYYY-MM-DD` |
+| end_date | string | 否 | 截止时间，格式 `YYYY-MM-DDTHH:mm:ss` 或 `YYYY-MM-DD` |
+
+**日期时间格式说明：**
+- 完整格式：`YYYY-MM-DDTHH:mm:ss` (ISO 8601)，如 `2026-02-10T09:00:00`
+- 简化格式：`YYYY-MM-DD`，后端自动补全为 `YYYY-MM-DDT00:00:00`
 
 ```json
 POST /api/tasks/project/1/create/
@@ -429,8 +667,8 @@ POST /api/tasks/project/1/create/
   "description": "设计系统数据库结构",
   "assignee_id": 2,
   "priority": "high",
-  "start_date": "2026-02-10",
-  "end_date": "2026-02-15"
+  "start_date": "2026-02-10T09:00:00",
+  "end_date": "2026-02-15T18:00:00"
 }
 ```
 
@@ -452,8 +690,8 @@ POST /api/tasks/project/1/create/
 | title | string | 是 | 子任务标题 |
 | description | string | 否 | 子任务描述 |
 | priority | string | 否 | 优先级，默认继承父任务 |
-| start_date | string | 否 | 开始日期 |
-| end_date | string | 否 | 结束日期 |
+| start_date | string | 否 | 开始时间，格式 `YYYY-MM-DDTHH:mm:ss` 或 `YYYY-MM-DD` |
+| end_date | string | 否 | 截止时间，格式 `YYYY-MM-DDTHH:mm:ss` 或 `YYYY-MM-DD` |
 
 ```json
 POST /api/tasks/5/subtasks/
@@ -521,6 +759,298 @@ POST /api/files/tasks/{task_id}/attachments/
 - 主任务（ID: 10）添加附件 → `POST /api/files/tasks/10/upload-url/`
 - 子任务（ID: 20）添加附件 → `POST /api/files/tasks/20/upload-url/`
 
+---
+
+### 创建无负责人任务（看板专用）
+
+**POST** `/tasks/create-unassigned/`
+
+> 权限：团队成员（项目成员）
+> 用途：在看板中直接创建主任务，无默认负责人，状态默认为"规划中"
+
+**请求体**
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| title | string | ✅ | 任务标题 |
+| description | string | ❌ | 任务描述 |
+| priority | string | ❌ | 优先级：`urgent`/`high`/`medium`/`low`，默认 `medium` |
+| project_id | integer | ✅ | 所属项目ID |
+
+**请求示例**
+```json
+POST /api/tasks/create-unassigned/
+{
+  "title": "新功能开发",
+  "description": "实现用户反馈的新功能",
+  "priority": "high",
+  "project_id": 1
+}
+```
+
+**响应示例**
+```json
+{
+  "code": 201,
+  "message": "任务创建成功",
+  "data": {
+    "id": 103,
+    "title": "新功能开发",
+    "description": "实现用户反馈的新功能",
+    "assignee_id": null,
+    "assignee_name": null,
+    "status": "planning",
+    "priority": "high",
+    "level": 1,
+    "project_id": 1,
+    "start_date": null,
+    "end_date": null,
+    "created_at": "2026-02-15T10:30:00+08:00"
+  }
+}
+```
+
+**错误码**
+- `2001` - 项目ID不能为空
+- `2004` - 项目已归档，无法创建任务
+- `3004` - 无权在此项目中创建任务
+- `3007` - 任务标题不能为空
+
+---
+
+### 领取并激活任务（看板专用）
+
+**POST** `/tasks/{task_id}/claim/`
+
+> 权限：团队成员
+> 用途：将"规划中"的任务拖到"待处理"/"进行中"时调用，自动分配给自己并设置时间
+
+**请求体**
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| status | string | ✅ | 目标状态：`pending`(待处理) 或 `in_progress`(进行中) |
+| end_date | string | ✅ | 截止时间，格式 `YYYY-MM-DDTHH:mm:ss` 或 `YYYY-MM-DD` |
+
+**请求示例**
+```json
+POST /api/tasks/103/claim/
+{
+  "status": "pending",
+  "end_date": "2026-02-25T18:00:00"
+}
+```
+
+**响应示例**
+```json
+{
+  "code": 200,
+  "message": "任务领取成功",
+  "data": {
+    "id": 103,
+    "title": "新功能开发",
+    "assignee_id": 5,
+    "assignee_name": "张三",
+    "status": "pending",
+    "priority": "high",
+    "level": 1,
+    "project_id": 1,
+    "start_date": "2026-02-15T10:30:00+08:00",
+    "end_date": "2026-02-25T18:00:00+08:00",
+    "updated_at": "2026-02-15T10:30:00+08:00"
+  }
+}
+```
+
+**业务规则**
+- 只能领取 `status = planning` 的任务
+- 领取后 `status` 变为用户指定的状态
+- `start_date` 自动设置为当前日期
+- `end_date` 必须大于等于今天
+- 如果任务已有负责人且不是自己，返回错误（已被他人领取）
+
+**错误码**
+- `3004` - 无权修改此任务（项目已归档）
+- `3006` - 项目已归档，无法修改任务
+- `3008` - 目标状态不能为空 / 无效的目标状态
+- `3009` - 结束时间不能为空 / 格式错误 / 早于今天
+- `3010` - 只能领取状态为"规划中"的任务
+- `3011` - 该任务已被其他人领取
+
+---
+
+### 删除任务
+
+**DELETE** `/tasks/{id}/delete/`
+
+> 权限：仅超级管理员
+> 说明：删除任务前会自动记录删除日志，包含任务完整信息
+
+**请求体（可选）**
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| reason | string | 否 | 删除原因 |
+
+**请求示例**
+```json
+DELETE /api/tasks/5/delete/
+{
+  "reason": "任务重复创建，删除重复的"
+}
+```
+
+**响应示例**
+```json
+{
+  "code": 204,
+  "message": "任务已删除",
+  "data": null
+}
+```
+
+**限制条件**
+- 存在子任务时无法删除（必须先删除子任务）
+
+---
+
+### 任务删除日志列表
+
+**GET** `/tasks/delete-logs/`
+
+> 权限：管理员/超管
+> 说明：查询所有被删除的任务记录，支持筛选和搜索
+
+**查询参数**
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| project_id | integer | 否 | 项目筛选 |
+| deleted_by | integer | 否 | 删除人ID筛选 |
+| start_date | date | 否 | 删除时间起始，格式 `YYYY-MM-DD` |
+| end_date | date | 否 | 删除时间截止，格式 `YYYY-MM-DD` |
+| search | string | 否 | 任务标题搜索 |
+| page | integer | 否 | 页码，默认 1 |
+| page_size | integer | 否 | 每页数量，默认 20 |
+
+**响应示例**
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "count": 50,
+    "next": "http://api.example.com/tasks/delete-logs/?page=2",
+    "previous": null,
+    "results": [
+      {
+        "id": 1,
+        "original_task_id": 101,
+        "title": "已完成的数据分析任务",
+        "description": "对用户行为数据进行分析",
+        "project": {
+          "id": 1,
+          "title": "电商平台重构"
+        },
+        "assignee": {
+          "id": 5,
+          "username": "张三"
+        },
+        "created_by": {
+          "id": 1,
+          "username": "管理员"
+        },
+        "status": "completed",
+        "priority": "high",
+        "level": 1,
+        "start_date": "2026-02-01T09:00:00+08:00",
+        "end_date": "2026-02-10T18:00:00+08:00",
+        "original_created_at": "2026-02-01T08:00:00+08:00",
+        "deleted_by": {
+          "id": 1,
+          "username": "admin"
+        },
+        "deleted_at": "2026-02-15T14:30:00+08:00",
+        "deletion_reason": "任务已完成且数据已归档"
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 任务删除日志详情
+
+**GET** `/tasks/delete-logs/{id}/`
+
+> 权限：管理员/超管
+> 说明：获取单条删除日志的完整信息，包含任务完整数据（可用于恢复）
+
+**响应示例**
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "id": 1,
+    "original_task_id": 101,
+    "title": "已完成的数据分析任务",
+    "description": "对用户行为数据进行分析",
+    "project": {
+      "id": 1,
+      "title": "电商平台重构"
+    },
+    "assignee": {
+      "id": 5,
+      "username": "张三"
+    },
+    "created_by": {
+      "id": 1,
+      "username": "管理员"
+    },
+    "status": "completed",
+    "priority": "high",
+    "level": 1,
+    "parent_id": null,
+    "path": "",
+    "start_date": "2026-02-01T09:00:00+08:00",
+    "end_date": "2026-02-10T18:00:00+08:00",
+    "original_created_at": "2026-02-01T08:00:00+08:00",
+    "deleted_by": {
+      "id": 1,
+      "username": "admin"
+    },
+    "deleted_at": "2026-02-15T14:30:00+08:00",
+    "deletion_reason": "任务已完成且数据已归档",
+    "task_data_json": {
+      "id": 101,
+      "title": "已完成的数据分析任务",
+      "description": "对用户行为数据进行分析",
+      "project_id": 1,
+      "project_title": "电商平台重构",
+      "assignee_id": 5,
+      "assignee_name": "张三",
+      "assignee_avatar": "https://...",
+      "status": "completed",
+      "priority": "high",
+      "level": 1,
+      "parent_id": null,
+      "path": "",
+      "start_date": "2026-02-01T09:00:00",
+      "end_date": "2026-02-10T18:00:00",
+      "normal_flag": "normal",
+      "created_by_id": 1,
+      "created_by_name": "管理员",
+      "created_at": "2026-02-01T08:00:00",
+      "updated_at": "2026-02-10T18:00:00"
+    }
+  }
+}
+```
+
+---
+
 ### 更新状态请求示例
 ```json
 PATCH /api/tasks/5/status/
@@ -558,8 +1088,8 @@ PATCH /api/tasks/5/status/
 | GET | `/visualization/list/` | 全局任务列表 | 团队成员 |
 
 ### 甘特图查询参数
-- `start_date`: 开始日期范围
-- `end_date`: 结束日期范围
+- `start_date`: 开始时间范围，格式 `YYYY-MM-DD`
+- `end_date`: 截止时间范围，格式 `YYYY-MM-DD`
 - `view_mode`: 视图模式 (day, week, month)
 
 ### 看板查询参数
@@ -792,9 +1322,14 @@ ws://localhost:8000/ws/notifications/?token=<access_token>
 | 3001 | 任务不存在 | 404 |
 | 3002 | 任务层级超过限制(最多3层) | 422 |
 | 3003 | 无权创建子任务(非负责人) | 403 |
-| 3004 | 无权查看任务详情 | 403 |
+| 3004 | 无权查看/修改任务详情 | 403 |
 | 3005 | 存在子任务，无法删除 | 422 |
-| 3006 | 任务已归档，无法修改 | 422 |
+| 3006 | 项目已归档，无法修改任务 | 422 |
+| 3007 | 任务标题不能为空 | 422 |
+| 3008 | 目标状态不能为空/无效 | 422 |
+| 3009 | 结束时间不能为空/格式错误/早于今天 | 422 |
+| 3010 | 只能领取状态为"规划中"的任务 | 422 |
+| 3011 | 该任务已被其他人领取 | 403 |
 | 4001 | 用户不存在 | 404 |
 | 4002 | 用户已是团队成员 | 409 |
 | 4003 | 用户未加入团队 | 403 |

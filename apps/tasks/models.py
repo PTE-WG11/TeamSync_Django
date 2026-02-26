@@ -43,6 +43,8 @@ class Task(models.Model):
     assignee = models.ForeignKey(
         'accounts.User',
         on_delete=models.CASCADE,
+        null=True,
+        blank=True,
         related_name='assigned_tasks',
         verbose_name=_('负责人')
     )
@@ -77,11 +79,11 @@ class Task(models.Model):
         max_length=255,
         blank=True,
         default='',
-        help_text=_('路径枚举，如 /1/12/34')
+        help_text=_('路径枚举，如 9/12')
     )
     # Date fields
-    start_date = models.DateField(_('开始日期'), null=True, blank=True)
-    end_date = models.DateField(_('结束日期'), null=True, blank=True)
+    start_date = models.DateTimeField(_('开始时间'), null=True, blank=True)
+    end_date = models.DateTimeField(_('截止时间'), null=True, blank=True)
     # Overdue tracking
     normal_flag = models.CharField(
         _('正常标识'),
@@ -200,7 +202,8 @@ class Task(models.Model):
         if self.status == 'completed':
             return False
         
-        if self.end_date and self.end_date < timezone.now().date():
+        # Compare date part only (ignore time)
+        if self.end_date and self.end_date.date() < timezone.now().date():
             if self.normal_flag != OverdueFlag.OVERDUE:
                 self.normal_flag = OverdueFlag.OVERDUE
                 self.save(update_fields=['normal_flag'])
@@ -311,3 +314,56 @@ class TaskAttachment(models.Model):
 
     def __str__(self):
         return self.file_name
+
+
+class TaskDeleteLog(models.Model):
+    """
+    Task delete log for audit.
+    Records who deleted what task and when.
+    """
+    # Original task info (snapshot at deletion time)
+    original_task_id = models.IntegerField(_('原任务ID'), db_index=True)
+    title = models.CharField(_('任务标题'), max_length=200)
+    description = models.TextField(_('任务描述'), blank=True, default='')
+    project_id = models.IntegerField(_('项目ID'), db_index=True)
+    project_title = models.CharField(_('项目标题'), max_length=100, blank=True)
+    assignee_id = models.IntegerField(_('负责人ID'), null=True, blank=True)
+    assignee_name = models.CharField(_('负责人名称'), max_length=150, blank=True)
+    status = models.CharField(_('状态'), max_length=20)
+    priority = models.CharField(_('优先级'), max_length=20)
+    level = models.PositiveSmallIntegerField(_('层级'), default=1)
+    parent_id = models.IntegerField(_('父任务ID'), null=True, blank=True)
+    path = models.CharField(_('路径'), max_length=255, blank=True, default='')
+    start_date = models.DateTimeField(_('开始时间'), null=True, blank=True)
+    end_date = models.DateTimeField(_('截止时间'), null=True, blank=True)
+    created_by_id = models.IntegerField(_('创建者ID'), null=True, blank=True)
+    created_by_name = models.CharField(_('创建者名称'), max_length=150, blank=True)
+    original_created_at = models.DateTimeField(_('原创建时间'), null=True, blank=True)
+    
+    # Deletion info
+    deleted_by = models.ForeignKey(
+        'accounts.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='deleted_tasks',
+        verbose_name=_('删除人')
+    )
+    deleted_by_name = models.CharField(_('删除人名称'), max_length=150, blank=True)
+    deleted_at = models.DateTimeField(_('删除时间'), auto_now_add=True, db_index=True)
+    deletion_reason = models.TextField(_('删除原因'), blank=True, default='')
+    
+    # Optional: store full task data as JSON for complete recovery if needed
+    task_data_json = models.JSONField(_('任务完整数据'), null=True, blank=True)
+
+    class Meta:
+        db_table = 'task_delete_logs'
+        verbose_name = _('任务删除日志')
+        verbose_name_plural = _('任务删除日志')
+        ordering = ['-deleted_at']
+        indexes = [
+            models.Index(fields=['project_id', 'deleted_at']),
+            models.Index(fields=['deleted_by', 'deleted_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.title} (deleted by {self.deleted_by_name})"

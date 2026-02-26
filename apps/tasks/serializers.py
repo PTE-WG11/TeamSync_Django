@@ -209,8 +209,8 @@ class MaskedTaskSerializer(serializers.ModelSerializer):
 class TaskCreateSerializer(serializers.ModelSerializer):
     """Task create serializer."""
     assignee_id = serializers.IntegerField(required=True)
-    start_date = serializers.DateField(required=False, allow_null=True)
-    end_date = serializers.DateField(required=False, allow_null=True)
+    start_date = serializers.DateTimeField(required=False, allow_null=True)
+    end_date = serializers.DateTimeField(required=False, allow_null=True)
     
     class Meta:
         model = Task
