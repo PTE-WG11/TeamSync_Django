@@ -35,8 +35,7 @@ class TaskListSerializer(serializers.ModelSerializer):
     """Task list serializer."""
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     priority_display = serializers.CharField(source='get_priority_display', read_only=True)
-    assignee_name = serializers.CharField(source='assignee.username', read_only=True)
-    assignee_avatar = serializers.CharField(source='assignee.avatar', read_only=True)
+    assignee = serializers.SerializerMethodField()
     can_view = serializers.SerializerMethodField()
     can_edit = serializers.SerializerMethodField()
     
@@ -45,12 +44,35 @@ class TaskListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'status', 'status_display',
             'priority', 'priority_display', 'level',
-            'assignee', 'assignee_name', 'assignee_avatar',
+            'assignee',
             'start_date', 'end_date', 'normal_flag',
             'subtask_count', 'completed_subtask_count',
             'can_view', 'can_edit', 'created_at'
         ]
         read_only_fields = ['id', 'created_at']
+
+    def get_assignee(self, obj):
+        """Get assignee info with full avatar URL."""
+        if obj.assignee:
+            return {
+                'id': obj.assignee.id,
+                'username': obj.assignee.username,
+                'avatar': self._get_full_avatar_url(obj.assignee.avatar)
+            }
+        return None
+
+    def _get_full_avatar_url(self, avatar):
+        """Build full avatar URL."""
+        if not avatar:
+            return None
+        # If it's already a full URL, return as is
+        if avatar.startswith('http://') or avatar.startswith('https://'):
+            return avatar
+        # If it's a relative path, build full URL
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(avatar)
+        return avatar
     
     def get_can_view(self, obj):
         """Check if user can view task details."""
@@ -86,21 +108,41 @@ class TaskTreeSerializer(serializers.ModelSerializer):
     """Task tree serializer."""
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     priority_display = serializers.CharField(source='get_priority_display', read_only=True)
-    assignee_name = serializers.CharField(source='assignee.username', read_only=True)
-    assignee_avatar = serializers.CharField(source='assignee.avatar', read_only=True)
+    assignee = serializers.SerializerMethodField()
     children = serializers.SerializerMethodField()
     
     class Meta:
         model = Task
         fields = [
             'id', 'project_id', 'title', 'description',
-            'assignee_id', 'assignee_name', 'assignee_avatar',
+            'assignee',
             'status', 'status_display', 'priority', 'priority_display',
             'level', 'parent_id', 'path', 'start_date', 'end_date',
             'normal_flag', 'subtask_count', 'completed_subtask_count',
             'children', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_assignee(self, obj):
+        """Get assignee info with full avatar URL."""
+        if obj.assignee:
+            return {
+                'id': obj.assignee.id,
+                'username': obj.assignee.username,
+                'avatar': self._get_full_avatar_url(obj.assignee.avatar)
+            }
+        return None
+
+    def _get_full_avatar_url(self, avatar):
+        """Build full avatar URL."""
+        if not avatar:
+            return None
+        if avatar.startswith('http://') or avatar.startswith('https://'):
+            return avatar
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(avatar)
+        return avatar
     
     def get_children(self, obj):
         """Get child tasks."""
@@ -145,14 +187,25 @@ class TaskDetailSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
     
     def get_assignee(self, obj):
-        """Get assignee info."""
+        """Get assignee info with full avatar URL."""
         if obj.assignee:
             return {
                 'id': obj.assignee.id,
                 'username': obj.assignee.username,
-                'avatar': obj.assignee.avatar
+                'avatar': self._get_full_avatar_url(obj.assignee.avatar)
             }
         return None
+
+    def _get_full_avatar_url(self, avatar):
+        """Build full avatar URL."""
+        if not avatar:
+            return None
+        if avatar.startswith('http://') or avatar.startswith('https://'):
+            return avatar
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(avatar)
+        return avatar
     
     def get_can_view(self, obj):
         """Check if user can view task details."""

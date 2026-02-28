@@ -20,6 +20,27 @@ from config.permissions import (
 from config.exceptions import ValidationError, ResourceNotFound, PermissionDenied
 
 
+def get_full_avatar_url(request, avatar):
+    """Build full avatar URL.
+
+    Args:
+        request: HTTP request object
+        avatar: Avatar path or URL
+
+    Returns:
+        Full URL or None if no avatar
+    """
+    if not avatar:
+        return None
+    # If it's already a full URL, return as is
+    if avatar.startswith('http://') or avatar.startswith('https://'):
+        return avatar
+    # If it's a relative path, build full URL
+    if request:
+        return request.build_absolute_uri(avatar)
+    return avatar
+
+
 class ProjectTaskListView(generics.ListAPIView):
     """List tasks in a project."""
     serializer_class = TaskListSerializer
@@ -570,8 +591,7 @@ class TaskCreateUnassignedView(generics.CreateAPIView):
                 'id': task.id,
                 'title': task.title,
                 'description': task.description,
-                'assignee_id': None,
-                'assignee_name': None,
+                'assignee': None,
                 'status': task.status,
                 'priority': task.priority,
                 'level': task.level,
@@ -671,8 +691,11 @@ class TaskClaimView(generics.GenericAPIView):
             'data': {
                 'id': task.id,
                 'title': task.title,
-                'assignee_id': user.id,
-                'assignee_name': user.username,
+                'assignee': {
+                    'id': user.id,
+                    'username': user.username,
+                    'avatar': get_full_avatar_url(request, user.avatar)
+                },
                 'status': task.status,
                 'priority': task.priority,
                 'level': task.level,
@@ -727,6 +750,10 @@ class TaskDeleteLogListView(generics.ListAPIView):
         
         data = []
         for log in (page if page is not None else queryset):
+            # Get avatar from task_data_json if available
+            avatar = None
+            if log.task_data_json and isinstance(log.task_data_json, dict):
+                avatar = log.task_data_json.get('assignee_avatar')
             data.append({
                 'id': log.id,
                 'original_task_id': log.original_task_id,
@@ -738,7 +765,8 @@ class TaskDeleteLogListView(generics.ListAPIView):
                 },
                 'assignee': {
                     'id': log.assignee_id,
-                    'username': log.assignee_name
+                    'username': log.assignee_name,
+                    'avatar': avatar
                 } if log.assignee_id else None,
                 'created_by': {
                     'id': log.created_by_id,
@@ -784,6 +812,11 @@ class TaskDeleteLogDetailView(generics.RetrieveAPIView):
     def retrieve(self, request, *args, **kwargs):
         log = self.get_object()
         
+        # Get avatar from task_data_json if available
+        avatar = None
+        if log.task_data_json and isinstance(log.task_data_json, dict):
+            avatar = log.task_data_json.get('assignee_avatar')
+
         return Response({
             'code': 200,
             'message': 'success',
@@ -798,7 +831,8 @@ class TaskDeleteLogDetailView(generics.RetrieveAPIView):
                 },
                 'assignee': {
                     'id': log.assignee_id,
-                    'username': log.assignee_name
+                    'username': log.assignee_name,
+                    'avatar': avatar
                 } if log.assignee_id else None,
                 'created_by': {
                     'id': log.created_by_id,

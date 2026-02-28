@@ -2,7 +2,10 @@
 Projects serializers for TeamSync.
 """
 from rest_framework import serializers
-from .models import Project, ProjectMember, ProjectStatus
+from .models import (
+    Project, ProjectMember, ProjectStatus,
+    Folder, ProjectDocument, DocumentComment, DocumentType, DocumentStatus
+)
 
 
 class ProjectMemberSerializer(serializers.ModelSerializer):
@@ -173,3 +176,213 @@ class ProjectProgressSerializer(serializers.Serializer):
     main_tasks = serializers.DictField()
     member_progress = serializers.ListField()
     overdue_tasks = serializers.ListField()
+
+
+# =============================================================================
+# Document Serializers
+# =============================================================================
+
+class FolderSerializer(serializers.ModelSerializer):
+    """Folder serializer."""
+    document_count = serializers.IntegerField(read_only=True)
+    created_by = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Folder
+        fields = ['id', 'name', 'sort_order', 'document_count', 'created_by', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+    
+    def get_created_by(self, obj):
+        """Get creator info."""
+        if obj.created_by:
+            return {
+                'id': obj.created_by.id,
+                'name': obj.created_by.username,
+                'avatar': obj.created_by.avatar
+            }
+        return None
+
+
+class FolderCreateSerializer(serializers.ModelSerializer):
+    """Folder create serializer."""
+    
+    class Meta:
+        model = Folder
+        fields = ['name', 'sort_order']
+
+
+class UploaderSerializer(serializers.Serializer):
+    """Uploader info serializer."""
+    id = serializers.IntegerField()
+    name = serializers.CharField(source='username')
+    avatar = serializers.CharField()
+
+
+class DocumentListSerializer(serializers.ModelSerializer):
+    """Document list serializer."""
+    doc_type_display = serializers.CharField(source='get_doc_type_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    folder_name = serializers.CharField(source='folder.name', read_only=True, default=None)
+    uploader = serializers.SerializerMethodField()
+    can_edit = serializers.BooleanField(read_only=True)
+    
+    class Meta:
+        model = ProjectDocument
+        fields = [
+            'id', 'title', 'doc_type', 'doc_type_display', 'status', 'status_display',
+            'folder_id', 'folder_name', 'file_name', 'file_size', 'can_edit',
+            'uploader', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+    
+    def get_uploader(self, obj):
+        """Get uploader info."""
+        if obj.uploaded_by:
+            return UploaderSerializer(obj.uploaded_by).data
+        return None
+
+
+class DocumentDetailSerializer(serializers.ModelSerializer):
+    """Document detail serializer."""
+    type = serializers.CharField(source='doc_type', read_only=True)
+    doc_type_display = serializers.CharField(source='get_doc_type_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    folder_name = serializers.CharField(source='folder.name', read_only=True, default=None)
+    uploader = serializers.SerializerMethodField()
+    can_edit = serializers.BooleanField(read_only=True)
+    file_url = serializers.SerializerMethodField()
+    download_url = serializers.SerializerMethodField()
+    version = serializers.SerializerMethodField()
+    version_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = ProjectDocument
+        fields = [
+            'id', 'project_id', 'folder_id', 'folder_name',
+            'title', 'type', 'doc_type', 'doc_type_display', 'status', 'status_display',
+            'file_name', 'file_size', 'file_type', 'file_url', 'download_url',
+            'content', 'can_edit', 'uploader', 'version', 'version_count',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+    
+    def get_uploader(self, obj):
+        """Get uploader info."""
+        if obj.uploaded_by:
+            return {
+                'id': obj.uploaded_by.id,
+                'name': obj.uploaded_by.username,
+                'avatar': obj.uploaded_by.avatar
+            }
+        return None
+    
+    def get_file_url(self, obj):
+        """Get file URL (for preview)."""
+        if obj.file_key:
+            from apps.files.storage import StorageFactory
+            try:
+                storage = StorageFactory.get_storage()
+                return storage.get_file_url(obj.file_key)
+            except:
+                return None
+        return None
+    
+    def get_download_url(self, obj):
+        """Get download URL."""
+        if obj.file_key:
+            from apps.files.storage import StorageFactory
+            try:
+                storage = StorageFactory.get_storage()
+                return storage.get_download_url(obj.file_key)
+            except:
+                return None
+        return None
+    
+    def get_version(self, obj):
+        """Get version string."""
+        return "v1.0"
+    
+    def get_version_count(self, obj):
+        """Get version count."""
+        return 1
+    
+    def to_representation(self, instance):
+        """Override to handle content field based on doc type."""
+        ret = super().to_representation(instance)
+        
+        # For non-markdown types, set content to None
+        if not instance.is_markdown:
+            ret['content'] = None
+        
+        return ret
+
+
+class MarkdownCreateSerializer(serializers.Serializer):
+    """Markdown document create serializer."""
+    title = serializers.CharField(max_length=200, required=True)
+    folder_id = serializers.IntegerField(required=False, allow_null=True)
+    content = serializers.CharField(required=False, allow_blank=True, default='')
+
+
+class MarkdownUpdateSerializer(serializers.Serializer):
+    """Markdown document update serializer."""
+    title = serializers.CharField(max_length=200, required=False)
+    content = serializers.CharField(required=False, allow_blank=True)
+    status = serializers.ChoiceField(choices=DocumentStatus.choices, required=False)
+
+
+class DocumentMoveSerializer(serializers.Serializer):
+    """Document move serializer."""
+    folder_id = serializers.IntegerField(required=False, allow_null=True)
+
+
+class FileUploadSerializer(serializers.Serializer):
+    """File upload serializer (for getting upload URL)."""
+    file_name = serializers.CharField(max_length=255, required=True)
+    file_type = serializers.CharField(max_length=100, required=True)
+    file_size = serializers.IntegerField(required=True, min_value=1)
+    folder_id = serializers.IntegerField(required=False, allow_null=True)
+    title = serializers.CharField(max_length=200, required=False)
+
+
+class FileConfirmSerializer(serializers.Serializer):
+    """File upload confirm serializer."""
+    file_key = serializers.CharField(max_length=500, required=True)
+    file_name = serializers.CharField(max_length=255, required=True)
+    file_type = serializers.CharField(max_length=100, required=True)
+    file_size = serializers.IntegerField(required=True, min_value=1)
+    folder_id = serializers.IntegerField(required=False, allow_null=True)
+    title = serializers.CharField(max_length=200, required=False)
+
+
+class DocumentCommentSerializer(serializers.ModelSerializer):
+    """Document comment serializer."""
+    author = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = DocumentComment
+        fields = ['id', 'content', 'author', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+    
+    def get_author(self, obj):
+        """Get author info."""
+        if obj.author:
+            return {
+                'id': obj.author.id,
+                'name': obj.author.username,
+                'avatar': obj.author.avatar
+            }
+        return None
+
+
+class CommentCreateSerializer(serializers.Serializer):
+    """Comment create serializer."""
+    content = serializers.CharField(required=True, min_length=1, max_length=2000)
+
+
+class DocumentStatisticsSerializer(serializers.Serializer):
+    """Document statistics serializer."""
+    total_documents = serializers.IntegerField()
+    total_size = serializers.IntegerField()
+    type_distribution = serializers.DictField(child=serializers.IntegerField())
+    recent_uploads = serializers.IntegerField()

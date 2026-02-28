@@ -178,3 +178,197 @@ class ProjectMember(models.Model):
 
     def __str__(self):
         return f"{self.project.title} - {self.user.username}"
+
+
+# =============================================================================
+# Project Document Models
+# =============================================================================
+
+class Folder(models.Model):
+    """
+    Document folder for project - flat structure (single level only).
+    """
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name='folders',
+        verbose_name=_('所属项目')
+    )
+    name = models.CharField(_('文件夹名称'), max_length=100)
+    sort_order = models.PositiveIntegerField(_('排序'), default=0)
+    created_by = models.ForeignKey(
+        'accounts.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='created_folders',
+        verbose_name=_('创建者')
+    )
+    created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('更新时间'), auto_now=True)
+
+    class Meta:
+        db_table = 'project_folders'
+        verbose_name = _('项目文件夹')
+        verbose_name_plural = _('项目文件夹')
+        ordering = ['sort_order', '-created_at']
+        indexes = [
+            models.Index(fields=['project', 'sort_order']),
+        ]
+
+    def __str__(self):
+        return f"{self.project.title} - {self.name}"
+
+    @property
+    def document_count(self):
+        """Get document count in this folder."""
+        return self.documents.count()
+
+
+class DocumentType(models.TextChoices):
+    """Document type choices."""
+    MARKDOWN = 'markdown', _('Markdown')
+    WORD = 'word', _('Word')
+    EXCEL = 'excel', _('Excel')
+    PPT = 'ppt', _('PPT')
+    PDF = 'pdf', _('PDF')
+    IMAGE = 'image', _('图片')
+    OTHER = 'other', _('其他')
+
+
+class DocumentStatus(models.TextChoices):
+    """Document status choices."""
+    EDITABLE = 'editable', _('可编辑')
+    READONLY = 'readonly', _('只读')
+
+
+class ProjectDocument(models.Model):
+    """
+    Project document model.
+    - Markdown: supports create/edit online, content stored in DB
+    - Other files: upload/download only, stored in MinIO/OSS
+    """
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name='documents',
+        verbose_name=_('所属项目')
+    )
+    folder = models.ForeignKey(
+        Folder,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='documents',
+        verbose_name=_('所属文件夹')
+    )
+    title = models.CharField(_('文档标题'), max_length=200)
+    doc_type = models.CharField(
+        _('文档类型'),
+        max_length=20,
+        choices=DocumentType.choices,
+        default=DocumentType.OTHER
+    )
+    status = models.CharField(
+        _('状态'),
+        max_length=20,
+        choices=DocumentStatus.choices,
+        default=DocumentStatus.EDITABLE
+    )
+
+    # File info (for uploaded files)
+    file_key = models.CharField(_('文件Key'), max_length=500, blank=True, default='')
+    file_name = models.CharField(_('文件名'), max_length=255, blank=True, default='')
+    file_size = models.BigIntegerField(_('文件大小'), default=0)
+    file_type = models.CharField(_('MIME类型'), max_length=100, blank=True, default='')
+
+    # Content (for markdown only)
+    content = models.TextField(_('内容'), blank=True, default='')
+
+    # Uploader info
+    uploaded_by = models.ForeignKey(
+        'accounts.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='uploaded_documents',
+        verbose_name=_('上传者')
+    )
+
+    created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('更新时间'), auto_now=True)
+
+    class Meta:
+        db_table = 'project_documents'
+        verbose_name = _('项目文档')
+        verbose_name_plural = _('项目文档')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['project', 'folder', '-created_at']),
+            models.Index(fields=['project', 'doc_type']),
+            models.Index(fields=['created_at']),
+        ]
+
+    def __str__(self):
+        return self.title
+
+    @property
+    def is_markdown(self):
+        """Check if document is markdown."""
+        return self.doc_type == DocumentType.MARKDOWN
+
+    @property
+    def can_edit(self):
+        """Check if document can be edited."""
+        return self.is_markdown and self.status == DocumentStatus.EDITABLE
+
+    @property
+    def file_extension(self):
+        """Get file extension."""
+        if self.file_name and '.' in self.file_name:
+            return self.file_name.split('.')[-1].lower()
+        return ''
+
+    def get_storage_file_key(self, file_name=None):
+        """Generate storage file key for this document."""
+        import uuid
+
+        name = file_name or self.file_name
+        if name and '.' in name:
+            ext = '.' + name.split('.')[-1].lower()
+        else:
+            ext = '.md' if self.is_markdown else ''
+
+        unique_id = str(uuid.uuid4())[:8]
+        return f"projects/{self.project_id}/documents/{unique_id}{ext}"
+
+
+class DocumentComment(models.Model):
+    """
+    Comment on project document.
+    """
+    document = models.ForeignKey(
+        ProjectDocument,
+        on_delete=models.CASCADE,
+        related_name='comments',
+        verbose_name=_('文档')
+    )
+    content = models.TextField(_('评论内容'))
+    author = models.ForeignKey(
+        'accounts.User',
+        on_delete=models.CASCADE,
+        related_name='document_comments',
+        verbose_name=_('作者')
+    )
+    created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('更新时间'), auto_now=True)
+
+    class Meta:
+        db_table = 'document_comments'
+        verbose_name = _('文档评论')
+        verbose_name_plural = _('文档评论')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['document', '-created_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.document.title} - {self.author.username}"

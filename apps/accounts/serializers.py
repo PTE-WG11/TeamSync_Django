@@ -14,7 +14,8 @@ class UserSerializer(serializers.ModelSerializer):
     """User serializer for basic info."""
     role_display = serializers.CharField(source='get_role_display', read_only=True)
     team_name = serializers.CharField(source='team.name', read_only=True)
-    
+    avatar = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = [
@@ -24,13 +25,25 @@ class UserSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 
+    def get_avatar(self, obj):
+        """Get full avatar URL."""
+        if not obj.avatar:
+            return None
+        if obj.avatar.startswith('http://') or obj.avatar.startswith('https://'):
+            return obj.avatar
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(obj.avatar)
+        return obj.avatar
+
 
 class UserDetailSerializer(serializers.ModelSerializer):
     """User serializer with detailed info."""
     role_display = serializers.CharField(source='get_role_display', read_only=True)
     team = serializers.SerializerMethodField()
     permissions = serializers.SerializerMethodField()
-    
+    avatar = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = [
@@ -39,6 +52,17 @@ class UserDetailSerializer(serializers.ModelSerializer):
             'permissions', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_avatar(self, obj):
+        """Get full avatar URL."""
+        if not obj.avatar:
+            return None
+        if obj.avatar.startswith('http://') or obj.avatar.startswith('https://'):
+            return obj.avatar
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(obj.avatar)
+        return obj.avatar
     
     def get_team(self, obj):
         """Get team info."""
@@ -163,7 +187,8 @@ class TeamMemberSerializer(serializers.ModelSerializer):
     """Team member serializer."""
     role_display = serializers.CharField(source='get_role_display', read_only=True)
     task_count = serializers.SerializerMethodField()
-    
+    avatar = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = [
@@ -171,6 +196,17 @@ class TeamMemberSerializer(serializers.ModelSerializer):
             'avatar', 'task_count', 'created_at'
         ]
         read_only_fields = ['id', 'created_at']
+
+    def get_avatar(self, obj):
+        """Get full avatar URL."""
+        if not obj.avatar:
+            return None
+        if obj.avatar.startswith('http://') or obj.avatar.startswith('https://'):
+            return obj.avatar
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(obj.avatar)
+        return obj.avatar
     
     def get_task_count(self, obj):
         """Get user's task count."""
@@ -224,3 +260,40 @@ class ChangeRoleSerializer(serializers.Serializer):
     role = serializers.ChoiceField(
         choices=[UserRole.TEAM_ADMIN, UserRole.MEMBER]
     )
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    """Change password serializer."""
+    old_password = serializers.CharField(required=True, write_only=True)
+    new_password = serializers.CharField(required=True, write_only=True)
+    new_password_confirm = serializers.CharField(required=True, write_only=True)
+    
+    def validate(self, attrs):
+        """Validate new password match."""
+        if attrs['new_password'] != attrs['new_password_confirm']:
+            raise serializers.ValidationError(
+                {'new_password_confirm': '两次新密码输入不一致'}
+            )
+        
+        # Validate password strength
+        from django.contrib.auth.password_validation import validate_password
+        try:
+            validate_password(attrs['new_password'])
+        except Exception as e:
+            raise serializers.ValidationError({'new_password': str(e)})
+        
+        return attrs
+
+
+class UserProfileUpdateSerializer(serializers.ModelSerializer):
+    """User profile update serializer (allows avatar update)."""
+    
+    class Meta:
+        model = User
+        fields = ['username', 'email', 'avatar', 'phone']
+        read_only_fields = []
+
+
+class AvatarUploadSerializer(serializers.Serializer):
+    """Avatar upload serializer."""
+    avatar = serializers.URLField(required=True, help_text='头像 URL 地址')

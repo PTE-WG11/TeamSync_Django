@@ -24,11 +24,12 @@ class MemberDashboardView(generics.GenericAPIView):
         week_start = today - timedelta(days=today.weekday())
         week_end = week_start + timedelta(days=6)
         
-        # Today's tasks
+        # Today's tasks (exclude archived projects)
         today_tasks = Task.objects.filter(
             assignee=user,
             end_date=today,
-            status__in=['planning', 'pending', 'in_progress']
+            status__in=['planning', 'pending', 'in_progress'],
+            project__is_archived=False
         ).select_related('project')
         
         today_data = {
@@ -46,12 +47,13 @@ class MemberDashboardView(generics.GenericAPIView):
             ]
         }
         
-        # This week's tasks
+        # This week's tasks (exclude archived projects)
         week_tasks = Task.objects.filter(
             assignee=user,
             end_date__gte=week_start,
             end_date__lte=week_end,
-            status__in=['planning', 'pending', 'in_progress']
+            status__in=['planning', 'pending', 'in_progress'],
+            project__is_archived=False
         ).exclude(end_date=today).select_related('project')
         
         week_data = {
@@ -69,11 +71,12 @@ class MemberDashboardView(generics.GenericAPIView):
             ]
         }
         
-        # Overdue tasks
+        # Overdue tasks (exclude archived projects)
         overdue_tasks = Task.objects.filter(
             assignee=user,
             normal_flag='overdue',
-            status__in=['planning', 'pending', 'in_progress']
+            status__in=['planning', 'pending', 'in_progress'],
+            project__is_archived=False
         ).select_related('project')
         
         overdue_data = {
@@ -133,6 +136,7 @@ class AdminDashboardView(generics.GenericAPIView):
         
         overdue_count = Task.objects.filter(
             project__team=team,
+            project__is_archived=False,
             normal_flag='overdue',
             status__in=['planning', 'pending', 'in_progress']
         ).count()
@@ -161,6 +165,7 @@ class AdminDashboardView(generics.GenericAPIView):
         for member in User.objects.filter(team=team, is_active=True):
             assigned_tasks = Task.objects.filter(
                 project__team=team,
+                project__is_archived=False,
                 level=1,
                 assignee=member
             )

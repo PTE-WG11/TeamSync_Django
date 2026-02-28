@@ -14,4 +14,7 @@ urlpatterns = [
     
     # Delete
     path('attachments/<int:attachment_id>/', views.AttachmentDeleteView.as_view(), name='attachment-delete'),
+    
+    # CORS Configuration (admin only)
+    path('admin/cors-config/', views.CORSConfigView.as_view(), name='cors-config'),
 ]

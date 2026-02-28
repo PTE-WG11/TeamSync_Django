@@ -9,7 +9,7 @@ from apps.tasks.serializers import TaskAttachmentSerializer
 from config.permissions import IsTeamMember, IsTaskAssigneeOrAdmin
 from config.exceptions import ValidationError, ResourceNotFound
 
-from .storage import StorageFactory
+from .storage import StorageFactory, BaseStorage
 
 
 class UploadUrlView(generics.GenericAPIView):
@@ -190,3 +190,67 @@ class AttachmentDeleteView(generics.DestroyAPIView):
             'message': '附件已删除',
             'data': None
         })
+
+
+# =============================================================================
+# CORS Configuration View
+# =============================================================================
+
+class CORSConfigView(generics.GenericAPIView):
+    """
+    Setup CORS policy for storage bucket.
+    Only super admin can access this endpoint.
+    """
+    permission_classes = [permissions.IsAdminUser]
+    
+    def post(self, request, *args, **kwargs):
+        """Setup CORS policy."""
+        origins = request.data.get('origins')
+        allow_all = request.data.get('allow_all', False)
+        
+        if allow_all:
+            origins = ['*']
+        elif not origins:
+            return Response({
+                'code': 400,
+                'message': '请提供 origins 列表或设置 allow_all 为 true',
+                'data': None
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if isinstance(origins, str):
+            origins = [origins]
+        
+        try:
+            storage = StorageFactory.get_storage()
+            
+            if hasattr(storage, 'setup_cors'):
+                success = storage.setup_cors(origins)
+                if success:
+                    return Response({
+                        'code': 0,
+                        'message': 'CORS 配置成功',
+                        'data': {
+                            'allowed_origins': origins,
+                            'allowed_methods': ['GET', 'PUT', 'POST', 'DELETE', 'HEAD'],
+                            'allowed_headers': ['*']
+                        }
+                    })
+                else:
+                    return Response({
+                        'code': 500,
+                        'message': 'CORS 配置失败',
+                        'data': None
+                    }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            else:
+                return Response({
+                    'code': 400,
+                    'message': '当前存储不支持 CORS 配置',
+                    'data': None
+                }, status=status.HTTP_400_BAD_REQUEST)
+                
+        except Exception as e:
+            return Response({
+                'code': 500,
+                'message': f'配置失败: {str(e)}',
+                'data': None
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -14,7 +14,31 @@ from config.permissions import IsAdminOrSuperAdmin, IsTeamMember
 from config.exceptions import ResourceNotFound
 
 
-class GanttDataView(generics.GenericAPIView):
+class BaseVisualizationView(generics.GenericAPIView):
+    """Base view for visualization with common utilities."""
+
+    def _get_full_avatar_url(self, request, avatar):
+        """Build full avatar URL.
+
+        Args:
+            request: HTTP request object
+            avatar: Avatar path or URL
+
+        Returns:
+            Full URL or None if no avatar
+        """
+        if not avatar:
+            return None
+        # If it's already a full URL, return as is
+        if avatar.startswith('http://') or avatar.startswith('https://'):
+            return avatar
+        # If it's a relative path, build full URL
+        if request:
+            return request.build_absolute_uri(avatar)
+        return avatar
+
+
+class GanttDataView(BaseVisualizationView):
     """Get Gantt chart data for a project."""
     permission_classes = [IsTeamMember]
     
@@ -80,6 +104,7 @@ class GanttDataView(generics.GenericAPIView):
                 'assignee': {
                     'id': task.assignee.id if task.assignee else None,
                     'username': task.assignee.username if task.assignee else None,
+                    'avatar': self._get_full_avatar_url(request, task.assignee.avatar) if task.assignee else None,
                     'color': member_colors.get(task.assignee_id)
                 } if task.assignee else None,
                 'level': task.level,
@@ -134,7 +159,7 @@ class GanttDataView(generics.GenericAPIView):
         })
 
 
-class KanbanDataView(generics.GenericAPIView):
+class KanbanDataView(BaseVisualizationView):
     """Get Kanban board data for a project."""
     permission_classes = [IsTeamMember]
     
@@ -177,7 +202,8 @@ class KanbanDataView(generics.GenericAPIView):
                 'priority': task.priority,
                 'assignee': {
                     'id': task.assignee.id if task.assignee else None,
-                    'username': task.assignee.username if task.assignee else None
+                    'username': task.assignee.username if task.assignee else None,
+                    'avatar': self._get_full_avatar_url(request, task.assignee.avatar) if task.assignee else None
                 } if task.assignee else None,
                 'end_date': task.end_date.isoformat() if task.end_date else None,
                 'normal_flag': task.normal_flag
@@ -196,7 +222,7 @@ class KanbanDataView(generics.GenericAPIView):
         })
 
 
-class CalendarDataView(generics.GenericAPIView):
+class CalendarDataView(BaseVisualizationView):
     """Get calendar data for a project."""
     permission_classes = [IsTeamMember]
     
@@ -266,7 +292,8 @@ class CalendarDataView(generics.GenericAPIView):
                     'priority': task.priority,
                     'assignee': {
                         'id': task.assignee.id if task.assignee else None,
-                        'username': task.assignee.username if task.assignee else None
+                        'username': task.assignee.username if task.assignee else None,
+                        'avatar': self._get_full_avatar_url(request, task.assignee.avatar) if task.assignee else None
                     } if task.assignee else None
                 })
                 
@@ -290,7 +317,7 @@ class CalendarDataView(generics.GenericAPIView):
         })
 
 
-class GlobalKanbanView(generics.GenericAPIView):
+class GlobalKanbanView(BaseVisualizationView):
     """Get global kanban data across projects."""
     permission_classes = [IsTeamMember]
     
@@ -317,7 +344,8 @@ class GlobalKanbanView(generics.GenericAPIView):
         project_id = request.query_params.get('project_id')
         
         # Build queryset - show all tasks for team members, not just their own
-        queryset = Task.objects.filter(level=1)
+        # Filter out archived projects
+        queryset = Task.objects.filter(level=1, project__is_archived=False)
         
         if project_id:
             queryset = queryset.filter(project_id=project_id)
@@ -372,7 +400,8 @@ class GlobalKanbanView(generics.GenericAPIView):
                 'priority': task.priority,
                 'assignee': {
                     'id': task.assignee.id if task.assignee else None,
-                    'username': task.assignee.username if task.assignee else None
+                    'username': task.assignee.username if task.assignee else None,
+                    'avatar': self._get_full_avatar_url(request, task.assignee.avatar) if task.assignee else None
                 } if task.assignee else None,
                 'created_by': {
                     'id': task.created_by.id if task.created_by else None,
@@ -399,7 +428,7 @@ class GlobalKanbanView(generics.GenericAPIView):
         })
 
 
-class GlobalGanttView(generics.GenericAPIView):
+class GlobalGanttView(BaseVisualizationView):
     """Get global Gantt data across projects."""
     permission_classes = [IsTeamMember]
     
@@ -414,11 +443,11 @@ class GlobalGanttView(generics.GenericAPIView):
         view_mode = request.query_params.get('view_mode', 'day')
         project_id = request.query_params.get('project_id')
         
-        # Build queryset
+        # Build queryset - filter out archived projects
         if is_admin:
-            queryset = Task.objects.filter(level=1)
+            queryset = Task.objects.filter(level=1, project__is_archived=False)
         else:
-            queryset = Task.objects.filter(level=1, assignee=user)
+            queryset = Task.objects.filter(level=1, assignee=user, project__is_archived=False)
         
         if project_id:
             queryset = queryset.filter(project_id=project_id)
@@ -463,7 +492,8 @@ class GlobalGanttView(generics.GenericAPIView):
                 'status': task.status,
                 'assignee': {
                     'id': task.assignee.id if task.assignee else None,
-                    'username': task.assignee.username if task.assignee else None
+                    'username': task.assignee.username if task.assignee else None,
+                    'avatar': self._get_full_avatar_url(request, task.assignee.avatar) if task.assignee else None
                 } if task.assignee else None,
                 'project': {
                     'id': task.project.id,
@@ -501,7 +531,7 @@ class GlobalGanttView(generics.GenericAPIView):
         })
 
 
-class GlobalCalendarView(generics.GenericAPIView):
+class GlobalCalendarView(BaseVisualizationView):
     """Get global calendar data across projects."""
     permission_classes = [IsTeamMember]
     
@@ -515,11 +545,11 @@ class GlobalCalendarView(generics.GenericAPIView):
         month = int(request.query_params.get('month', timezone.now().month))
         project_id = request.query_params.get('project_id')
         
-        # Build queryset
+        # Build queryset - filter out archived projects
         if is_admin:
-            queryset = Task.objects.filter(level=1)
+            queryset = Task.objects.filter(level=1, project__is_archived=False)
         else:
-            queryset = Task.objects.filter(level=1, assignee=user)
+            queryset = Task.objects.filter(level=1, assignee=user, project__is_archived=False)
         
         if project_id:
             queryset = queryset.filter(project_id=project_id)
@@ -568,7 +598,8 @@ class GlobalCalendarView(generics.GenericAPIView):
                     'priority': task.priority,
                     'assignee': {
                         'id': task.assignee.id if task.assignee else None,
-                        'username': task.assignee.username if task.assignee else None
+                        'username': task.assignee.username if task.assignee else None,
+                        'avatar': self._get_full_avatar_url(request, task.assignee.avatar) if task.assignee else None
                     } if task.assignee else None,
                     'project': {
                         'id': task.project.id,
@@ -595,7 +626,7 @@ class GlobalCalendarView(generics.GenericAPIView):
         })
 
 
-class GlobalTaskListView(generics.GenericAPIView):
+class GlobalTaskListView(BaseVisualizationView):
     """Get global task list across projects with tree structure."""
     permission_classes = [IsTeamMember]
     
@@ -615,15 +646,16 @@ class GlobalTaskListView(generics.GenericAPIView):
         view_type = request.query_params.get('view', 'tree')  # tree or flat
         
         # Build queryset - 只查询主任务(level=1)，子任务通过递归获取
+        # Filter out archived projects
         if is_admin:
-            queryset = Task.objects.filter(level=1)
+            queryset = Task.objects.filter(level=1, project__is_archived=False)
         else:
             # 成员需要看到：
             # 1. 分配给自己的主任务
             # 2. 包含自己子任务的主任务（即使主任务不是自己的）
             queryset = Task.objects.filter(
-                Q(level=1, assignee=user) |
-                Q(level=1, children__assignee=user)
+                Q(level=1, assignee=user, project__is_archived=False) |
+                Q(level=1, children__assignee=user, project__is_archived=False)
             ).distinct()
         
         if project_id:
@@ -741,12 +773,13 @@ class GlobalTaskListView(generics.GenericAPIView):
             return task_data
         
         # Full details (authorized user)
+        request = self.request
         task_data.update({
             'description': task.description,
             'assignee': {
                 'id': task.assignee.id if task.assignee else None,
                 'username': task.assignee.username if task.assignee else None,
-                'avatar': task.assignee.avatar if task.assignee else None
+                'avatar': self._get_full_avatar_url(request, task.assignee.avatar) if task.assignee else None
             } if task.assignee else None,
             'assignee_id': task.assignee_id,
             'parent_id': task.parent_id,
@@ -786,6 +819,7 @@ class GlobalTaskListView(generics.GenericAPIView):
             child_queryset = child_queryset.filter(assignee=user)
         
         for child in child_queryset.select_related('assignee', 'created_by'):
+            request = self.request
             child_data = {
                 'id': child.id,
                 'title': child.title,
@@ -801,7 +835,7 @@ class GlobalTaskListView(generics.GenericAPIView):
                 'assignee': {
                     'id': child.assignee.id if child.assignee else None,
                     'username': child.assignee.username if child.assignee else None,
-                    'avatar': child.assignee.avatar if child.assignee else None
+                    'avatar': self._get_full_avatar_url(request, child.assignee.avatar) if child.assignee else None
                 } if child.assignee else None,
                 'assignee_id': child.assignee_id,
                 'start_date': child.start_date.isoformat() if child.start_date else None,
